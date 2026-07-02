@@ -131,6 +131,11 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
     public void onStop() {
         // Stop terminal cursor blinking if enabled
         setTerminalCursorBlinkerState(false);
+
+        // Cancel any pending delayed request to show the soft keyboard so it cannot fire after
+        // the activity has stopped. onResume() re-establishes it via setSoftKeyboardState().
+        if (mShowSoftKeyboardRunnable != null)
+            mActivity.getTerminalView().removeCallbacks(mShowSoftKeyboardRunnable);
     }
 
     /**
