@@ -8,6 +8,7 @@ import android.net.Uri;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 
 import com.termux.shared.data.IntentUtils;
 import com.termux.shared.logger.Logger;
@@ -81,7 +82,9 @@ public class SystemEventReceiver extends BroadcastReceiver {
         intentFilter.addAction(Intent.ACTION_PACKAGE_REMOVED);
         intentFilter.addAction(Intent.ACTION_PACKAGE_REPLACED);
         intentFilter.addDataScheme("package");
-        context.registerReceiver(getInstance(), intentFilter);
+        // The receiver only needs protected system broadcasts, which are still delivered to
+        // receivers registered as not-exported, so other apps cannot send it intents directly.
+        ContextCompat.registerReceiver(context, getInstance(), intentFilter, ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     public synchronized static void unregisterPackageUpdateEvents(@NonNull Context context) {

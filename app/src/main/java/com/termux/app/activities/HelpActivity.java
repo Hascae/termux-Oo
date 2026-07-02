@@ -35,6 +35,11 @@ public final class HelpActivity extends AppCompatActivity {
         mWebView = new WebView(this);
         WebSettings settings = mWebView.getSettings();
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        // The WebView only ever renders the online wiki, so it does not need access to local
+        // file:// or content:// urls, which setAllowFileAccess() defaults to allowing before
+        // API 30.
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
         setContentView(progressLayout);
         mWebView.clearCache(true);
 
@@ -47,8 +52,16 @@ public final class HelpActivity extends AppCompatActivity {
                     return false;
                 }
 
+                // Only forward web links to external apps; other schemes (intent:, file:, etc.)
+                // served by a page must not be able to launch arbitrary activities.
+                Uri parsedUri = Uri.parse(url);
+                String urlScheme = parsedUri.getScheme();
+                if (!"http".equals(urlScheme) && !"https".equals(urlScheme)) {
+                    return true;
+                }
+
                 try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                    startActivity(new Intent(Intent.ACTION_VIEW, parsedUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
                 } catch (ActivityNotFoundException e) {
                     // Android TV does not have a system browser.
                     setContentView(progressLayout);
