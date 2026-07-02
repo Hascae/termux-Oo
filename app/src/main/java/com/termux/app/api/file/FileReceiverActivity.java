@@ -201,28 +201,31 @@ public class FileReceiverActivity extends AppCompatActivity {
     public File saveStreamWithName(InputStream in, String attachmentFileName) {
         File receiveDir = new File(TERMUX_RECEIVEDIR);
 
-        if (DataUtils.isNullOrEmpty(attachmentFileName)) {
-            showErrorDialogAndQuit("File name cannot be null or empty");
-            return null;
-        }
-
-        // The suggested file name is fully attacker-controlled (content DISPLAY_NAME,
-        // EXTRA_TITLE or EXTRA_SUBJECT of an externally received intent). Reduce it to a bare
-        // file name so path separators cannot be used to traverse out of the downloads
-        // directory (e.g. a name like "../../.bashrc" or "../.termux/termux.properties").
-        attachmentFileName = new File(attachmentFileName).getName();
-        if (DataUtils.isNullOrEmpty(attachmentFileName)
-                || ".".equals(attachmentFileName) || "..".equals(attachmentFileName)) {
-            showErrorDialogAndQuit("File name is not valid");
-            return null;
-        }
-
-        if (!receiveDir.isDirectory() && !receiveDir.mkdirs()) {
-            showErrorDialogAndQuit("Cannot create directory: " + receiveDir.getAbsolutePath());
-            return null;
-        }
-
+        // The received stream (a content:// stream or FileInputStream) is owned by this method
+        // and must be closed on every exit path, otherwise a file descriptor is leaked for each
+        // received file, including on the early-return validation failures below.
         try {
+            if (DataUtils.isNullOrEmpty(attachmentFileName)) {
+                showErrorDialogAndQuit("File name cannot be null or empty");
+                return null;
+            }
+
+            // The suggested file name is fully attacker-controlled (content DISPLAY_NAME,
+            // EXTRA_TITLE or EXTRA_SUBJECT of an externally received intent). Reduce it to a bare
+            // file name so path separators cannot be used to traverse out of the downloads
+            // directory (e.g. a name like "../../.bashrc" or "../.termux/termux.properties").
+            attachmentFileName = new File(attachmentFileName).getName();
+            if (DataUtils.isNullOrEmpty(attachmentFileName)
+                    || ".".equals(attachmentFileName) || "..".equals(attachmentFileName)) {
+                showErrorDialogAndQuit("File name is not valid");
+                return null;
+            }
+
+            if (!receiveDir.isDirectory() && !receiveDir.mkdirs()) {
+                showErrorDialogAndQuit("Cannot create directory: " + receiveDir.getAbsolutePath());
+                return null;
+            }
+
             final File outFile = new File(receiveDir, attachmentFileName);
             // Defense in depth: make sure the resolved path really stays inside the downloads
             // directory before writing anything to it.
@@ -242,6 +245,14 @@ public class FileReceiverActivity extends AppCompatActivity {
             showErrorDialogAndQuit("Error saving file:\n\n" + e);
             Logger.logStackTraceWithMessage(LOG_TAG, "Error saving file", e);
             return null;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException ignored) {
+                    // Nothing useful to do if closing the received stream fails.
+                }
+            }
         }
     }
 
