@@ -19,6 +19,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Download bootstrap packages
+        # downloadBootstraps is only wired as a dependency of javaCompile, but
+        # the native build embeds the bootstrap zips via .incbin and can run
+        # first on a clean machine, so fetch them explicitly before building.
+        run: ./gradlew downloadBootstraps
+
       - name: Build unsigned release APKs
         run: ./gradlew assembleRelease
 
