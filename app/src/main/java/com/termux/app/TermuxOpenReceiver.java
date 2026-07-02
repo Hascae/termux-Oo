@@ -133,9 +133,33 @@ public class TermuxOpenReceiver extends BroadcastReceiver {
             return true;
         }
 
+        /**
+         * Check that {@code canonicalPath} is the Termux files directory or the external storage
+         * directory, or a file/directory strictly under one of them. A trailing separator is used
+         * for the boundary so a sibling whose name merely shares the prefix (e.g. ".../filesX")
+         * cannot satisfy the check.
+         */
+        private static boolean isPathInAllowedDir(@NonNull String canonicalPath) throws IOException {
+            String storagePath = Environment.getExternalStorageDirectory().getCanonicalPath();
+            for (String allowedDir : new String[]{TermuxConstants.TERMUX_FILES_DIR_PATH, storagePath}) {
+                if (canonicalPath.equals(allowedDir) || canonicalPath.startsWith(allowedDir + File.separator))
+                    return true;
+            }
+            return false;
+        }
+
         @Override
         public Cursor query(@NonNull Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
             File file = new File(uri.getPath());
+
+            // Restrict metadata queries to the same directories openFile() allows, so external
+            // callers cannot probe the name/size of arbitrary files elsewhere on the device.
+            try {
+                if (!isPathInAllowedDir(file.getCanonicalPath()))
+                    throw new IllegalArgumentException("Invalid path: " + uri.getPath());
+            } catch (IOException e) {
+                throw new IllegalArgumentException(e);
+            }
 
             if (projection == null) {
                 projection = new String[]{
@@ -173,6 +197,7 @@ public class TermuxOpenReceiver extends BroadcastReceiver {
         @Override
         public String getType(@NonNull Uri uri) {
             String path = uri.getLastPathSegment();
+            if (path == null) return null;
             int extIndex = path.lastIndexOf('.') + 1;
             if (extIndex > 0) {
                 MimeTypeMap mimeMap = MimeTypeMap.getSingleton();
@@ -204,9 +229,8 @@ public class TermuxOpenReceiver extends BroadcastReceiver {
                 String path = file.getCanonicalPath();
                 String callingPackageName = getCallingPackage();
                 Logger.logDebug(LOG_TAG, "Open file request received from " + callingPackageName + " for \"" + path + "\" with mode \"" + mode + "\"");
-                String storagePath = Environment.getExternalStorageDirectory().getCanonicalPath();
                 // See https://support.google.com/faqs/answer/7496913:
-                if (!(path.startsWith(TermuxConstants.TERMUX_FILES_DIR_PATH) || path.startsWith(storagePath))) {
+                if (!isPathInAllowedDir(path)) {
                     throw new IllegalArgumentException("Invalid path: " + path);
                 }
 

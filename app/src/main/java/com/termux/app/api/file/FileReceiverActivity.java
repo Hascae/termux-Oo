@@ -206,6 +206,17 @@ public class FileReceiverActivity extends AppCompatActivity {
             return null;
         }
 
+        // The suggested file name is fully attacker-controlled (content DISPLAY_NAME,
+        // EXTRA_TITLE or EXTRA_SUBJECT of an externally received intent). Reduce it to a bare
+        // file name so path separators cannot be used to traverse out of the downloads
+        // directory (e.g. a name like "../../.bashrc" or "../.termux/termux.properties").
+        attachmentFileName = new File(attachmentFileName).getName();
+        if (DataUtils.isNullOrEmpty(attachmentFileName)
+                || ".".equals(attachmentFileName) || "..".equals(attachmentFileName)) {
+            showErrorDialogAndQuit("File name is not valid");
+            return null;
+        }
+
         if (!receiveDir.isDirectory() && !receiveDir.mkdirs()) {
             showErrorDialogAndQuit("Cannot create directory: " + receiveDir.getAbsolutePath());
             return null;
@@ -213,6 +224,12 @@ public class FileReceiverActivity extends AppCompatActivity {
 
         try {
             final File outFile = new File(receiveDir, attachmentFileName);
+            // Defense in depth: make sure the resolved path really stays inside the downloads
+            // directory before writing anything to it.
+            if (!outFile.getCanonicalPath().startsWith(receiveDir.getCanonicalPath() + File.separator)) {
+                showErrorDialogAndQuit("Refusing to save file outside the downloads directory.");
+                return null;
+            }
             try (FileOutputStream f = new FileOutputStream(outFile)) {
                 byte[] buffer = new byte[4096];
                 int readBytes;
