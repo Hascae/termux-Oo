@@ -546,8 +546,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         Logger.showToast(this, (showNow ? getString(R.string.msg_enabling_terminal_toolbar) : getString(R.string.msg_disabling_terminal_toolbar)), true);
         terminalToolbarViewPager.setVisibility(showNow ? View.VISIBLE : View.GONE);
         if (showNow && isTerminalToolbarTextInputViewSelected()) {
-            // Focus the text input view if just revealed.
-            findViewById(R.id.terminal_toolbar_text_input).requestFocus();
+            // Focus the text input view if just revealed. The view lives inside the toolbar
+            // ViewPager page, which may not be instantiated yet right after it is made visible,
+            // so findViewById() can still return null here.
+            final View textInputView = findViewById(R.id.terminal_toolbar_text_input);
+            if (textInputView != null) textInputView.requestFocus();
         }
     }
 

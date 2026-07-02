@@ -189,7 +189,12 @@ public class TermuxTerminalViewClient extends TermuxTerminalViewClientBase {
 
     @Override
     public void onSingleTapUp(MotionEvent e) {
-        TerminalEmulator term = mActivity.getCurrentSession().getEmulator();
+        // A tap can land while there is no current session (e.g. transiently after the last
+        // session is closed), and getCurrentSession() is nullable, so guard it as every other
+        // caller does instead of dereferencing it directly.
+        TerminalSession currentSession = mActivity.getCurrentSession();
+        if (currentSession == null) return;
+        TerminalEmulator term = currentSession.getEmulator();
 
         if (mActivity.getProperties().shouldOpenTerminalTranscriptURLOnClick()) {
             int[] columnAndRow = mActivity.getTerminalView().getColumnAndRow(e, true);
