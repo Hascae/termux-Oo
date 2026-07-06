@@ -291,14 +291,14 @@ downloadBootstraps.doLast {
             if (!cc.exists()) { logger.warn("vk-gemm: ${triple} missing in NDK, skipping ${bArch}"); return }
 
             def stage = new File(buildDir, "vkgemm/${bArch}")
-            delete stage
+            project.delete stage
             def libexecDir = new File(stage, "libexec/vk-gemm"); libexecDir.mkdirs()
             def shareDir   = new File(stage, "share/vk-gemm");   shareDir.mkdirs()
             def binDir     = new File(stage, "bin");             binDir.mkdirs()
             def outBin = new File(libexecDir, "vk_gemm")
 
             try {
-                exec {
+                project.exec {
                     commandLine cc.absolutePath, "-O2", "-std=c11",
                         mainC.absolutePath, "-lvulkan", "-lm", "-o", outBin.absolutePath
                 }
@@ -306,23 +306,23 @@ downloadBootstraps.doLast {
                 logger.warn("vk-gemm: compile failed for ${bArch} (${t.message}); bootstrap-${bArch}.zip untouched"); return
             }
 
-            copy { from wrapper; into binDir }
+            project.copy { from wrapper; into binDir }
             ["gemm_tiled.spv", "gemm_coopmat.spv"].each { s ->
-                def f = new File(vkSrc, s); if (f.exists()) copy { from f; into shareDir }
+                def f = new File(vkSrc, s); if (f.exists()) project.copy { from f; into shareDir }
             }
 
             def tmp = new File(zip.parentFile, "bootstrap-${bArch}.zip.vktmp")
-            delete tmp
-            copy { from zip; into zip.parentFile; rename { "bootstrap-${bArch}.zip.vktmp" } }
+            project.delete tmp
+            project.copy { from zip; into zip.parentFile; rename { "bootstrap-${bArch}.zip.vktmp" } }
             try {
-                exec { workingDir stage; commandLine "zip", "-r", "-q", tmp.absolutePath, "bin", "libexec", "share" }
-                exec { commandLine "unzip", "-t", "-qq", tmp.absolutePath }
+                project.exec { workingDir stage; commandLine "zip", "-r", "-q", tmp.absolutePath, "bin", "libexec", "share" }
+                project.exec { commandLine "unzip", "-t", "-qq", tmp.absolutePath }
             } catch (Throwable t) {
                 logger.warn("vk-gemm: zip inject/validate failed for ${bArch} (${t.message}); bootstrap untouched")
-                delete tmp; return
+                project.delete tmp; return
             }
-            delete zip
-            if (!tmp.renameTo(zip)) { logger.warn("vk-gemm: could not replace bootstrap-${bArch}.zip; run clean and rebuild"); delete tmp; return }
+            project.delete zip
+            if (!tmp.renameTo(zip)) { logger.warn("vk-gemm: could not replace bootstrap-${bArch}.zip; run clean and rebuild"); project.delete tmp; return }
             logger.lifecycle("vk-gemm: bundled into bootstrap-${bArch}.zip")
         }
     } catch (Throwable t) {
