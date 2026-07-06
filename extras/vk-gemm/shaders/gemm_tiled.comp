@@ -1,0 +1,105 @@
+#version 460
+/* ============================================================================
+ *  gemm_tiled.comp — register-blocked tiled SGEMM,C = A * B
+ *  ----------------------------------------------------------------------------
+ *  這是「實際會在你手機上跑」的高速路徑。用了:
+ *    - buffer_reference (Buffer Device Address / bindless):不用 descriptor set,
+ *      直接把 GPU 指標從 push constant 傳進來。Android 11+ 主流支援。
+ *    - shared memory tiling + per-thread register blocking(每條 thread 算 TM×TN
+ *      個輸出),把 A/B 的重複讀取壓到最低 → 這才是 GEMM 快的關鍵。
+ *
+ *  尺寸都是 compile-time 常數,方便編譯器 unroll。要針對你的 GPU 榨效能就調
+ *  BM/BN/BK/TM/TN(見 README 的「調教」)。改完重編 shader,C 不用動。
+ *
+ *  A: MxK row-major   B: KxN row-major   C: MxN row-major
+ * ==========================================================================*/
+
+#extension GL_EXT_buffer_reference        : require   // BDA 指標
+#extension GL_EXT_buffer_reference2       : require
+#extension GL_EXT_scalar_block_layout     : require   // push constant 緊排
+
+/* ---- 可調 tile 參數(這組是安全預設,不是最佳解)------------------------- */
+#define BM 64      // 每個 workgroup 負責的 C 區塊高(rows)
+#define BN 64      // 每個 workgroup 負責的 C 區塊寬(cols)
+#define BK 16      // K 方向一次處理的厚度
+#define TM 4       // 每條 thread 算幾個 row
+#define TN 4       // 每條 thread 算幾個 col
+// workgroup thread 數 = (BM/TM) * (BN/TN) = 16 * 16 = 256
+#define NTHREAD 256
+
+layout(local_size_x = NTHREAD) in;
+
+/* BDA:一個指向 float 陣列的 GPU 指標型別 */
+layout(buffer_reference, scalar, buffer_reference_align = 4) readonly buffer FBufR { float v[]; };
+layout(buffer_reference, scalar, buffer_reference_align = 4)          buffer FBufW { float v[]; };
+
+layout(push_constant, scalar) uniform Push {
+    FBufR A;
+    FBufR B;
+    FBufW C;
+    uint  M, N, K;
+} pc;
+
+/* 把 A tile 轉置存(As[k][row]),讓內層迴圈讀 shared 時是連續的 */
+shared float As[BK][BM];
+shared float Bs[BK][BN];
+
+void main()
+{
+    const uint tid       = gl_LocalInvocationID.x;   // 0..255
+    const uint threadsN  = BN / TN;                  // 16
+    const uint threadRow = tid / threadsN;           // 0..15
+    const uint threadCol = tid % threadsN;           // 0..15
+
+    const uint cRow = gl_WorkGroupID.y * BM;         // 本 workgroup 的 C 左上角
+    const uint cCol = gl_WorkGroupID.x * BN;
+
+    /* 每條 thread 的 TM×TN 累加器,住在暫存器裡 */
+    float acc[TM][TN];
+    for (int i = 0; i < TM; i++)
+        for (int j = 0; j < TN; j++)
+            acc[i][j] = 0.0;
+
+    for (uint k0 = 0; k0 < pc.K; k0 += BK) {
+
+        /* --- 256 條 thread 合作把 A tile(BM×BK)搬進 shared,轉置擺放 --- */
+        for (uint idx = tid; idx < BM * BK; idx += NTHREAD) {
+            uint r  = idx / BK;                 // 0..BM-1
+            uint c  = idx % BK;                 // 0..BK-1
+            uint gr = cRow + r;
+            uint gk = k0   + c;
+            As[c][r] = (gr < pc.M && gk < pc.K) ? pc.A.v[gr * pc.K + gk] : 0.0;
+        }
+        /* --- B tile(BK×BN)搬進 shared,照常擺放 --- */
+        for (uint idx = tid; idx < BK * BN; idx += NTHREAD) {
+            uint r  = idx / BN;                 // 0..BK-1
+            uint c  = idx % BN;                 // 0..BN-1
+            uint gk = k0   + r;
+            uint gc = cCol + c;
+            Bs[r][c] = (gk < pc.K && gc < pc.N) ? pc.B.v[gk * pc.N + gc] : 0.0;
+        }
+        barrier();
+
+        /* --- 核心:把 shared 裡的 fragment 拉進暫存器做外積累加 --- */
+        for (uint kk = 0; kk < BK; kk++) {
+            float aFrag[TM], bFrag[TN];
+            for (uint i = 0; i < TM; i++) aFrag[i] = As[kk][threadRow * TM + i];
+            for (uint j = 0; j < TN; j++) bFrag[j] = Bs[kk][threadCol * TN + j];
+            for (uint i = 0; i < TM; i++)
+                for (uint j = 0; j < TN; j++)
+                    acc[i][j] += aFrag[i] * bFrag[j];
+        }
+        barrier();
+    }
+
+    /* --- 寫回 C,邊界檢查 --- */
+    for (uint i = 0; i < TM; i++) {
+        uint gr = cRow + threadRow * TM + i;
+        if (gr >= pc.M) continue;
+        for (uint j = 0; j < TN; j++) {
+            uint gc = cCol + threadCol * TN + j;
+            if (gc >= pc.N) continue;
+            pc.C.v[gr * pc.N + gc] = acc[i][j];
+        }
+    }
+}

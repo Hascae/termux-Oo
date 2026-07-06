@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# vk_gemm launcher (bundled into the Termux bootstrap).
+# The real binary lives in $PREFIX/libexec/vk-gemm and its .spv data in
+# $PREFIX/share/vk-gemm; run from the data dir so the shaders are found and the
+# pipeline cache lands somewhere writable.
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+DATA="$PREFIX/share/vk-gemm"
+BIN="$PREFIX/libexec/vk-gemm/vk_gemm"
+[ -x "$BIN" ] || { echo "vk-gemm: binary not found or not executable: $BIN" >&2; exit 1; }
+cd "$DATA" 2>/dev/null || { echo "vk-gemm: data dir not found: $DATA" >&2; exit 1; }
+exec "$BIN" "$@"

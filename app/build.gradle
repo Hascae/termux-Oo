@@ -236,6 +236,100 @@ task downloadBootstraps() {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  Bundle the vk-gemm extra (extras/vk-gemm) into each freshly-downloaded
+//  bootstrap zip so this fork ships it preinstalled.
+//
+//  Runs as a second doLast on downloadBootstraps: same task, so it is
+//  guaranteed to run after the download + checksum step and before the native
+//  build embeds the zip via .incbin.
+//
+//  FAIL-SAFE BY DESIGN: it cross-compiles into a staging dir, injects into a
+//  temp COPY of the bootstrap, validates that copy with `unzip -t`, and only
+//  then replaces the original. Any problem (no NDK, missing compiler, compile
+//  or zip error) logs a warning and leaves the bootstrap zip byte-for-byte
+//  untouched, so tool installation can never be affected. Worst case: vk_gemm
+//  is simply absent and Termux works normally.
+//
+//  Layout injected (matches TermuxInstaller's chmod rules for bin/ + libexec):
+//    bin/vk_gemm                 -> launcher wrapper (made executable)
+//    libexec/vk-gemm/vk_gemm     -> the native binary (made executable)
+//    share/vk-gemm/*.spv         -> prebuilt SPIR-V shaders (data)
+// ---------------------------------------------------------------------------
+downloadBootstraps.doLast {
+    try {
+        def vkSrc = new File(rootDir, "extras/vk-gemm")
+        def mainC = new File(vkSrc, "src/main.c")
+        def wrapper = new File(vkSrc, "packaging/vk_gemm")
+        if (!mainC.exists() || !wrapper.exists()) {
+            logger.warn("vk-gemm: extras/vk-gemm not found, skipping bundle"); return
+        }
+
+        def ndkDir = android.ndkDirectory
+        if (ndkDir == null || !ndkDir.exists()) {
+            logger.warn("vk-gemm: NDK not found, skipping bundle (bootstraps untouched)"); return
+        }
+        def prebuilt = new File(ndkDir, "toolchains/llvm/prebuilt")
+        def hostDir = prebuilt.isDirectory() ? prebuilt.listFiles()?.find { it.isDirectory() } : null
+        if (hostDir == null) {
+            logger.warn("vk-gemm: NDK LLVM toolchain not found, skipping bundle"); return
+        }
+        def ccBin = new File(hostDir, "bin")
+
+        // bootstrap arch name -> NDK clang wrapper (API 24; Vulkan/BDA needs modern Android anyway)
+        def triples = [
+            "aarch64": "aarch64-linux-android24-clang",
+            "arm"    : "armv7a-linux-androideabi24-clang",
+            "i686"   : "i686-linux-android24-clang",
+            "x86_64" : "x86_64-linux-android24-clang",
+        ]
+
+        triples.each { bArch, triple ->
+            def zip = new File(projectDir, "src/main/cpp/bootstrap-${bArch}.zip")
+            if (!zip.exists()) return
+            def cc = new File(ccBin, triple)
+            if (!cc.exists()) { logger.warn("vk-gemm: ${triple} missing in NDK, skipping ${bArch}"); return }
+
+            def stage = new File(buildDir, "vkgemm/${bArch}")
+            delete stage
+            def libexecDir = new File(stage, "libexec/vk-gemm"); libexecDir.mkdirs()
+            def shareDir   = new File(stage, "share/vk-gemm");   shareDir.mkdirs()
+            def binDir     = new File(stage, "bin");             binDir.mkdirs()
+            def outBin = new File(libexecDir, "vk_gemm")
+
+            try {
+                exec {
+                    commandLine cc.absolutePath, "-O2", "-std=c11",
+                        mainC.absolutePath, "-lvulkan", "-lm", "-o", outBin.absolutePath
+                }
+            } catch (Throwable t) {
+                logger.warn("vk-gemm: compile failed for ${bArch} (${t.message}); bootstrap-${bArch}.zip untouched"); return
+            }
+
+            copy { from wrapper; into binDir }
+            ["gemm_tiled.spv", "gemm_coopmat.spv"].each { s ->
+                def f = new File(vkSrc, s); if (f.exists()) copy { from f; into shareDir }
+            }
+
+            def tmp = new File(zip.parentFile, "bootstrap-${bArch}.zip.vktmp")
+            delete tmp
+            copy { from zip; into zip.parentFile; rename { "bootstrap-${bArch}.zip.vktmp" } }
+            try {
+                exec { workingDir stage; commandLine "zip", "-r", "-q", tmp.absolutePath, "bin", "libexec", "share" }
+                exec { commandLine "unzip", "-t", "-qq", tmp.absolutePath }
+            } catch (Throwable t) {
+                logger.warn("vk-gemm: zip inject/validate failed for ${bArch} (${t.message}); bootstrap untouched")
+                delete tmp; return
+            }
+            delete zip
+            if (!tmp.renameTo(zip)) { logger.warn("vk-gemm: could not replace bootstrap-${bArch}.zip; run clean and rebuild"); delete tmp; return }
+            logger.lifecycle("vk-gemm: bundled into bootstrap-${bArch}.zip")
+        }
+    } catch (Throwable t) {
+        logger.warn("vk-gemm: bundling skipped due to error, bootstraps left untouched: " + t.message)
+    }
+}
+
 afterEvaluate {
     android.applicationVariants.all { variant ->
         variant.javaCompileProvider.get().dependsOn(downloadBootstraps)

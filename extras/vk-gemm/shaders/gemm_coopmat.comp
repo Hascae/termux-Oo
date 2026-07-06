@@ -1,0 +1,65 @@
+#version 460
+/* ============================================================================
+ *  gemm_coopmat.comp — cooperative matrix SGEMM(2024 KHR 特性,未來路徑)
+ *  ----------------------------------------------------------------------------
+ *  用 VK_KHR_cooperative_matrix 把 matmul 丟到 matrix/tensor 硬體上。
+ *  A=B=fp16、C 以 fp32 累加(精度較好)。
+ *
+ *  重點:coopmat 的 M/N/K 必須「剛好」是驅動回報的其中一組合法尺寸,而 GLSL
+ *  的 coopmat 維度是編譯期常數 —— 所以這裡用 specialization constant,由 host
+ *  端在建 pipeline 時把 runtime 查到的尺寸塞進來。這就是「新特性」跟「保證能編」
+ *  能共存的機制。
+ *
+ *  這條是簡潔版(一個 subgroup 算一塊 M×N,直接從 global 讀,沒做 shared 複用),
+ *  目的是「特性能不能亮」的驗證,不是榨峰值。真要快得再疊 shared/register tiling。
+ *  行動 GPU(Adreno/Mali)目前多半沒這特性 → host 會自動 fallback 到 gemm_tiled。
+ *
+ *  A: MxK   B: KxN   C: MxN,皆 row-major,且 M%CM_M==N%CM_N==K%CM_K==0。
+ * ==========================================================================*/
+
+#extension GL_KHR_cooperative_matrix                    : require
+#extension GL_KHR_memory_scope_semantics                : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_buffer_reference                      : require
+#extension GL_EXT_buffer_reference2                     : require
+#extension GL_EXT_scalar_block_layout                   : require
+
+/* host 建 pipeline 時填入:coopmat 合法尺寸 + subgroup 大小 */
+layout(constant_id = 0) const int  CM_M = 16;
+layout(constant_id = 1) const int  CM_N = 16;
+layout(constant_id = 2) const int  CM_K = 16;
+layout(constant_id = 3) const uint SG   = 32;   // subgroup size → 一個 workgroup 一個 subgroup
+
+layout(local_size_x_id = 3) in;                 // local_size_x = SG
+
+layout(buffer_reference, scalar, buffer_reference_align = 2) readonly buffer HBuf { float16_t v[]; };
+layout(buffer_reference, scalar, buffer_reference_align = 4)          buffer FBuf { float     v[]; };
+
+layout(push_constant, scalar) uniform Push {
+    HBuf A;   // fp16 MxK
+    HBuf B;   // fp16 KxN
+    FBuf C;   // fp32 MxN
+    uint M, N, K;
+} pc;
+
+void main()
+{
+    uint tileRow = gl_WorkGroupID.y * uint(CM_M);   // C 區塊左上角
+    uint tileCol = gl_WorkGroupID.x * uint(CM_N);
+
+    coopmat<float, gl_ScopeSubgroup, CM_M, CM_N, gl_MatrixUseAccumulator> acc =
+        coopmat<float, gl_ScopeSubgroup, CM_M, CM_N, gl_MatrixUseAccumulator>(0.0);
+
+    for (uint k = 0; k < pc.K; k += uint(CM_K)) {
+        coopmat<float16_t, gl_ScopeSubgroup, CM_M, CM_K, gl_MatrixUseA> a;
+        coopmat<float16_t, gl_ScopeSubgroup, CM_K, CM_N, gl_MatrixUseB> b;
+
+        /* element offset / stride 都以「陣列元素」為單位(row-major) */
+        coopMatLoad(a, pc.A.v, tileRow * pc.K + k,       pc.K, gl_CooperativeMatrixLayoutRowMajor);
+        coopMatLoad(b, pc.B.v, k       * pc.N + tileCol, pc.N, gl_CooperativeMatrixLayoutRowMajor);
+
+        acc = coopMatMulAdd(a, b, acc);
+    }
+
+    coopMatStore(acc, pc.C.v, tileRow * pc.N + tileCol, pc.N, gl_CooperativeMatrixLayoutRowMajor);
+}
