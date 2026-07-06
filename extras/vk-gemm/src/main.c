@@ -53,6 +53,26 @@ typedef struct {
 } GemmPush;
 
 /* ---------------------------------------------------------------------------
+ *  Vulkan 1.1/1.2 進入點動態載入
+ *  Android 的 libvulkan.so 在低 API stub(如 API 24)只導出 1.0 符號,直接連結
+ *  1.1/1.2 的核心函式會 "undefined symbol"。改用 vkGetInstanceProcAddr 在執行期
+ *  載入(核心名優先,退回對應 KHR 擴充名):連結只依賴 1.0 的 vkGetInstanceProcAddr,
+ *  又能在各裝置/驅動上取到正確實作。
+ * ------------------------------------------------------------------------- */
+static PFN_vkGetPhysicalDeviceProperties2 p_GetPhysicalDeviceProperties2;
+static PFN_vkGetPhysicalDeviceFeatures2   p_GetPhysicalDeviceFeatures2;
+static PFN_vkWaitSemaphores               p_WaitSemaphores;
+static PFN_vkGetBufferDeviceAddress       p_GetBufferDeviceAddress;
+
+static PFN_vkVoidFunction load_ipa(VkInstance inst, const char *core, const char *khr)
+{
+    PFN_vkVoidFunction f = vkGetInstanceProcAddr(inst, core);
+    if (!f && khr) f = vkGetInstanceProcAddr(inst, khr);
+    if (!f) { fprintf(stderr, "[FATAL] 載入不到進入點 %s\n", core); exit(1); }
+    return f;
+}
+
+/* ---------------------------------------------------------------------------
  *  小工具
  * ------------------------------------------------------------------------- */
 static char *read_file(const char *path, size_t *out_size)
@@ -161,7 +181,7 @@ static void create_bda_buffer(VkPhysicalDevice pd, VkDevice dev, VkDeviceSize by
     VkBufferDeviceAddressInfo dai = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = *buf,
     };
-    *addr = vkGetBufferDeviceAddress(dev, &dai);
+    *addr = p_GetBufferDeviceAddress(dev, &dai);
 }
 
 /* 建一條 compute pipeline(可選 specialization) */
@@ -220,6 +240,12 @@ int main(int argc, char **argv)
     VkInstance instance; VK_CHECK(vkCreateInstance(&ici, NULL, &instance));
     printf("Instance API : %u.%u\n", VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api));
 
+    /* 動態載入 1.1/1.2 進入點(見檔案上方說明,避免在 API 24 stub 上連結失敗) */
+    p_GetPhysicalDeviceProperties2 = (PFN_vkGetPhysicalDeviceProperties2) load_ipa(instance, "vkGetPhysicalDeviceProperties2", "vkGetPhysicalDeviceProperties2KHR");
+    p_GetPhysicalDeviceFeatures2   = (PFN_vkGetPhysicalDeviceFeatures2)   load_ipa(instance, "vkGetPhysicalDeviceFeatures2",   "vkGetPhysicalDeviceFeatures2KHR");
+    p_WaitSemaphores               = (PFN_vkWaitSemaphores)               load_ipa(instance, "vkWaitSemaphores",               "vkWaitSemaphoresKHR");
+    p_GetBufferDeviceAddress       = (PFN_vkGetBufferDeviceAddress)       load_ipa(instance, "vkGetBufferDeviceAddress",       "vkGetBufferDeviceAddressKHR");
+
     /* ------------------------------------------------------------------ *
      * 2) 選 physical device                                              *
      * ------------------------------------------------------------------ */
@@ -238,7 +264,7 @@ int main(int argc, char **argv)
     /* subgroup 大小(coopmat 用) */
     VkPhysicalDeviceVulkan11Properties p11 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES };
     VkPhysicalDeviceProperties2 props2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p11 };
-    vkGetPhysicalDeviceProperties2(pd, &props2);
+    p_GetPhysicalDeviceProperties2(pd, &props2);
     uint32_t subgroup_size = p11.subgroupSize ? p11.subgroupSize : 32;
     float timestamp_period = props.limits.timestampPeriod;   /* ns / tick */
 
@@ -249,7 +275,7 @@ int main(int argc, char **argv)
     VkPhysicalDeviceVulkan11Features s11 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
     VkPhysicalDeviceVulkan12Features s12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &s11 };
     VkPhysicalDeviceFeatures2 sup = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &s12 };
-    vkGetPhysicalDeviceFeatures2(pd, &sup);
+    p_GetPhysicalDeviceFeatures2(pd, &sup);
 
     if (!s12.bufferDeviceAddress) {
         fprintf(stderr, "[FATAL] 這張 GPU 不支援 bufferDeviceAddress(BDA),\n"
@@ -538,7 +564,7 @@ int main(int argc, char **argv)
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
                 .semaphoreCount = 1, .pSemaphores = &timeline, .pValues = &tl_val,
             };
-            VK_CHECK(vkWaitSemaphores(dev, &wi, UINT64_MAX));
+            VK_CHECK(p_WaitSemaphores(dev, &wi, UINT64_MAX));
         } else {
             VkSubmitInfo si = {
                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
