@@ -276,6 +276,22 @@ downloadBootstraps.doLast {
         }
         def ccBin = new File(hostDir, "bin")
 
+        // Gradle 9 removed Project.exec{}/copy{}, so run external commands with ProcessBuilder
+        // and copy files with java.nio. runCmd throws on non-zero exit (stdout+stderr captured).
+        def runCmd = { List<String> cmd, File cwd ->
+            def pb = new ProcessBuilder(cmd).redirectErrorStream(true)
+            if (cwd != null) pb.directory(cwd)
+            def p = pb.start()
+            def out = p.inputStream.getText("UTF-8")
+            int rc = p.waitFor()
+            if (rc != 0) throw new RuntimeException("`" + cmd.join(' ') + "` exit " + rc + ":\n" + out)
+        }
+        def copyFile = { File src, File dst ->
+            dst.parentFile.mkdirs()
+            java.nio.file.Files.copy(src.toPath(), dst.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+
         // bootstrap arch name -> NDK clang wrapper (API 24; Vulkan/BDA needs modern Android anyway)
         def triples = [
             "aarch64": "aarch64-linux-android24-clang",
@@ -291,38 +307,36 @@ downloadBootstraps.doLast {
             if (!cc.exists()) { logger.warn("vk-gemm: ${triple} missing in NDK, skipping ${bArch}"); return }
 
             def stage = new File(buildDir, "vkgemm/${bArch}")
-            project.delete stage
+            stage.deleteDir()
             def libexecDir = new File(stage, "libexec/vk-gemm"); libexecDir.mkdirs()
             def shareDir   = new File(stage, "share/vk-gemm");   shareDir.mkdirs()
             def binDir     = new File(stage, "bin");             binDir.mkdirs()
             def outBin = new File(libexecDir, "vk_gemm")
 
             try {
-                project.exec {
-                    commandLine cc.absolutePath, "-O2", "-std=c11",
-                        mainC.absolutePath, "-lvulkan", "-lm", "-o", outBin.absolutePath
-                }
+                runCmd([cc.absolutePath, "-O2", "-std=c11",
+                        mainC.absolutePath, "-lvulkan", "-lm", "-o", outBin.absolutePath], null)
             } catch (Throwable t) {
                 logger.warn("vk-gemm: compile failed for ${bArch} (${t.message}); bootstrap-${bArch}.zip untouched"); return
             }
 
-            project.copy { from wrapper; into binDir }
+            copyFile(wrapper, new File(binDir, "vk_gemm"))
             ["gemm_tiled.spv", "gemm_coopmat.spv"].each { s ->
-                def f = new File(vkSrc, s); if (f.exists()) project.copy { from f; into shareDir }
+                def f = new File(vkSrc, s); if (f.exists()) copyFile(f, new File(shareDir, s))
             }
 
             def tmp = new File(zip.parentFile, "bootstrap-${bArch}.zip.vktmp")
-            project.delete tmp
-            project.copy { from zip; into zip.parentFile; rename { "bootstrap-${bArch}.zip.vktmp" } }
+            tmp.delete()
+            copyFile(zip, tmp)
             try {
-                project.exec { workingDir stage; commandLine "zip", "-r", "-q", tmp.absolutePath, "bin", "libexec", "share" }
-                project.exec { commandLine "unzip", "-t", "-qq", tmp.absolutePath }
+                runCmd(["zip", "-r", "-q", tmp.absolutePath, "bin", "libexec", "share"], stage)
+                runCmd(["unzip", "-t", "-qq", tmp.absolutePath], null)
             } catch (Throwable t) {
                 logger.warn("vk-gemm: zip inject/validate failed for ${bArch} (${t.message}); bootstrap untouched")
-                project.delete tmp; return
+                tmp.delete(); return
             }
-            project.delete zip
-            if (!tmp.renameTo(zip)) { logger.warn("vk-gemm: could not replace bootstrap-${bArch}.zip; run clean and rebuild"); project.delete tmp; return }
+            zip.delete()
+            if (!tmp.renameTo(zip)) { logger.warn("vk-gemm: could not replace bootstrap-${bArch}.zip; run clean and rebuild"); tmp.delete(); return }
             logger.lifecycle("vk-gemm: bundled into bootstrap-${bArch}.zip")
         }
     } catch (Throwable t) {
