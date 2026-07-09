@@ -22,11 +22,11 @@ say "[1/4] Installing proot-distro ..."
 pkg install -y proot-distro
 
 say "[2/4] Installing $DISTRO rootfs (if needed) ..."
-ROOTFS="${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/installed-rootfs/$DISTRO"
-if [ -d "$ROOTFS" ]; then
+if proot-distro login "$DISTRO" -- true >/dev/null 2>&1; then
     echo "   already installed"
 else
-    proot-distro install "$DISTRO"
+    # Tolerate a spurious re-install: if the container already exists, don't abort (set -e).
+    proot-distro install "$DISTRO" || echo "   (install reported an error; assuming already present, continuing)"
 fi
 
 say "[3/4] Installing Node.js + Claude Code inside $DISTRO ..."

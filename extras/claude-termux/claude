@@ -9,12 +9,13 @@
 set -euo pipefail
 
 DISTRO="${CLAUDE_TERMUX_DISTRO:-debian}"
-ROOTFS="${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/installed-rootfs/$DISTRO"
 
-# First run: set the sandbox up (needs network). Detect an existing install by the rootfs
-# directory — parsing `proot-distro list` output is fragile and differs across versions.
-if ! command -v proot-distro >/dev/null 2>&1 || [ ! -d "$ROOTFS" ]; then
-    echo "Claude sandbox not set up yet — running one-time setup (needs network)..." >&2
+# First run: set the sandbox up (needs network). Detect an existing install authoritatively
+# by actually entering the sandbox (`login -- true`); both parsing `proot-distro list` and
+# guessing the rootfs path proved unreliable across versions.
+if ! command -v proot-distro >/dev/null 2>&1 \
+   || ! proot-distro login "$DISTRO" -- true >/dev/null 2>&1; then
+    echo "Setting up the Claude sandbox (one-time, needs network)..." >&2
     claude-setup
 fi
 
