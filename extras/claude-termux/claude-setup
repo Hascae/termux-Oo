@@ -22,7 +22,8 @@ say "[1/4] Installing proot-distro ..."
 pkg install -y proot-distro
 
 say "[2/4] Installing $DISTRO rootfs (if needed) ..."
-if proot-distro list --installed 2>/dev/null | grep -qx "$DISTRO"; then
+ROOTFS="${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/installed-rootfs/$DISTRO"
+if [ -d "$ROOTFS" ]; then
     echo "   already installed"
 else
     proot-distro install "$DISTRO"
