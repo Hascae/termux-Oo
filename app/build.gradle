@@ -325,6 +325,13 @@ downloadBootstraps.doLast {
                 def f = new File(vkSrc, s); if (f.exists()) copyFile(f, new File(shareDir, s))
             }
 
+            // Also bundle the Claude Code sandbox launcher + one-time setup (arch-independent
+            // shell scripts). They land in bin/ so TermuxInstaller makes them executable.
+            def claudeSrc = new File(rootDir, "extras/claude-termux")
+            ["claude", "claude-setup"].each { s ->
+                def cf = new File(claudeSrc, s); if (cf.exists()) copyFile(cf, new File(binDir, s))
+            }
+
             def tmp = new File(zip.parentFile, "bootstrap-${bArch}.zip.vktmp")
             tmp.delete()
             copyFile(zip, tmp)

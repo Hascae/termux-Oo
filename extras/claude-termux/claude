@@ -1,0 +1,26 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# =============================================================================
+#  claude — launcher that runs Claude Code inside the glibc (Debian) sandbox.
+#
+#  The current Termux working directory is bound into the sandbox at the same
+#  path and used as the working directory, so Claude operates on your real
+#  files. On first use it triggers the one-time claude-setup.
+# =============================================================================
+set -euo pipefail
+
+DISTRO="${CLAUDE_TERMUX_DISTRO:-debian}"
+
+# First run: set the sandbox up (needs network).
+if ! command -v proot-distro >/dev/null 2>&1 \
+   || ! proot-distro list --installed 2>/dev/null | grep -qx "$DISTRO"; then
+    echo "Claude sandbox not set up yet — running one-time setup (needs network)..." >&2
+    claude-setup
+fi
+
+CWD="$(pwd)"
+
+# --bind shares the current dir into the sandbox at the same path; the inner
+# bash cds there before launching claude. $0 inside `bash -lc` is the first
+# positional arg (CWD), and "$@" is the remaining claude arguments.
+exec proot-distro login "$DISTRO" --bind "$CWD:$CWD" -- \
+    bash -lc 'cd "$0" && exec claude "$@"' "$CWD" "$@"
