@@ -22,7 +22,10 @@ say "[1/4] Installing proot-distro ..."
 pkg install -y proot-distro
 
 say "[2/4] Installing $DISTRO rootfs (if needed) ..."
-if proot-distro login "$DISTRO" -- true >/dev/null 2>&1; then
+# proot-distro keeps installed rootfses under .../proot-distro/containers/<distro>; the
+# `login -- true` probe is the fallback insurance.
+PDROOT="${PREFIX:-/data/data/com.termux/files/usr}/var/lib/proot-distro/containers/$DISTRO"
+if [ -d "$PDROOT" ] || proot-distro login "$DISTRO" -- true >/dev/null 2>&1; then
     echo "   already installed"
 else
     # Tolerate a spurious re-install: if the container already exists, don't abort (set -e).
